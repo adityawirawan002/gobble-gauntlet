@@ -66,7 +66,7 @@ export const TURKEY_TUNING = Object.freeze({
   hitInvuln: 1.6,
   maxLives: 3,
   decoyCooldown: 2.6,
-  decoyThrowSpeedX: 435,
+  decoyThrowSpeedX: 565,
   decoyThrowSpeedY: -360,
   bounceVelocity: -860,
 });
@@ -192,8 +192,8 @@ export const RUN_BADGES = Object.freeze([
 ]);
 
 export const UI_RECTS = Object.freeze({
-  titlePlayBtn: { x: 378, y: 286, w: 282, h: 66 },
-  titleModeBtn: { x: 678, y: 286, w: 226, h: 66 },
+  titlePlayBtn: { x: 376, y: 224, w: 286, h: 62 },
+  titleModeBtn: { x: 680, y: 224, w: 228, h: 62 },
   hudPauseBtn: { x: 1178, y: 14, w: 86, h: 36 },
   hudMuteBtn: { x: 1178, y: 56, w: 86, h: 36 },
   pauseResumeBtn: { x: 486, y: 318, w: 308, h: 58 },

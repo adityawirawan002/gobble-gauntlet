@@ -406,7 +406,7 @@ export function createEscapeWorld(seed = 1) {
       if (decoy) {
         layout.decoys.push(decoy);
         events |= EVENTS.DECOY;
-        emitFloatingCallout(state.particles, t.x + t.w * 0.5, t.y - 42, 'ACORN DECOY!', '#FFD43B', 0.92);
+        emitSparkBurst(state.particles, rng, decoy.x, decoy.y, '#FFE066', 6);
       }
     }
 
@@ -426,6 +426,7 @@ export function createEscapeWorld(seed = 1) {
         emitSoundRipple(state.particles, decoy.x, decoy.y, '#FFE066', 110);
         bumpCombo(100, 'FOOLED!', decoy.x, decoy.y - 48, '#FFD43B');
       },
+      layout.ovens,
     );
     if (f.brokeChaseInCover && !prevBrokeChase) {
       state.stats.stealthEscapes += 1;
@@ -448,9 +449,14 @@ export function createEscapeWorld(seed = 1) {
     }
     for (let i = 0; i < layout.decoys.length; i += 1) {
       const d = layout.decoys[i];
-      if (d.landed && d.pulseTimer >= 0.42) {
+      if (d.justBounced) {
+        d.justBounced = false;
+        emitSoundRipple(state.particles, d.x, d.y, '#FFE066', 92, 34);
+        emitSoundRipple(state.particles, d.x, d.y, '#FFA94D', 58, 18);
+      }
+      if (d.landed && d.pulseTimer >= 0.36) {
         d.pulseTimer = 0;
-        emitSoundRipple(state.particles, d.x, d.y, '#FFE066', 84);
+        emitSoundRipple(state.particles, d.x, d.y, '#FFE066', 88);
       }
     }
 
@@ -470,7 +476,7 @@ export function createEscapeWorld(seed = 1) {
         b.squash = 1;
         events |= EVENTS.BOUNCE;
         emitSparkBurst(state.particles, rng, b.x + b.w * 0.5, b.y + 8, '#FF6B6B', 9);
-        emitFloatingCallout(state.particles, b.x + b.w * 0.5, b.y - 38, 'BOING!', '#FF8787', 0.95);
+        emitSoundRipple(state.particles, b.x + b.w * 0.5, b.y + 8, '#FF8787', 54);
       }
     }
 

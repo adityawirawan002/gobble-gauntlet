@@ -18,28 +18,28 @@ export function generateStageLayout(stageConfig, rng) {
       ? [560, 1215, 1920, 2500]
       : stageConfig.id === 2
         ? [540, 1220, 1910, 2560]
-        : [540, 1240, 1940, 2765];
+        : [540, 1240, 1790, 2755];
 
   const ovenPositions =
     stageConfig.id === 1
       ? [980, 1680, 2340]
       : stageConfig.id === 2
         ? [920, 1600, 2270, 2860]
-        : [920, 1620, 2320, 3035];
+        : [920, 1620, 2085, 3035];
 
   const bouncePositions =
     stageConfig.id === 1
       ? [835, 1535, 2195]
       : stageConfig.id === 2
         ? [775, 1455, 2125, 2715]
-        : [775, 1475, 2175, 2895];
+        : [775, 1475, 1950, 2895];
 
   const gravyPositions =
     stageConfig.id === 1
       ? [1375, 2065]
       : stageConfig.id === 2
         ? [1335, 2015, 2630]
-        : [1350, 2040, 2610];
+        : [1350, 2260, 2575];
 
   coverPositions.forEach((x, idx) => {
     covers.push({
@@ -120,13 +120,13 @@ export function generateStageLayout(stageConfig, rng) {
 
   // Stage 2 & 3 overhead sweeping carving knives!
   for (let i = 0; i < stageConfig.sweeperKnives; i += 1) {
-    const baseX = stageConfig.id === 3 && i === 1 ? 2660 : Math.floor(len * (0.45 + i * 0.28));
+    const baseX = stageConfig.id === 3 && i === 1 ? 2820 : Math.floor(len * (0.45 + i * 0.28));
     knives.push({
       kind: 'sweeper',
       x: baseX,
-      y: VIEW.groundY - 158,
+      y: VIEW.groundY - 134,
       baseX,
-      baseY: VIEW.groundY - 158,
+      baseY: VIEW.groundY - 134,
       vx: -225,
       vy: 0,
       w: HAZARD_CONFIG.knifeWidth + 8,
@@ -237,7 +237,7 @@ export function updateCarvingKnives(knives, dt, stageLength) {
     if (k.kind === 'sweeper') {
       k.phase += dt * 2.15;
       k.x = k.baseX + Math.sin(k.phase) * 185;
-      k.y = k.baseY + Math.cos(k.phase * 2) * 26;
+      k.y = k.baseY + Math.cos(k.phase * 2) * 18;
       k.vx = Math.cos(k.phase) * 185 * 2.15;
       k.angle = k.vx >= 0 ? 0 : Math.PI;
       k.trail.push({ x: k.x, y: k.y, angle: k.angle, alpha: 0.45 });
@@ -283,6 +283,7 @@ export function updatePickupsAndProps(layout, dt) {
       if (d.y >= VIEW.groundY - d.radius) {
         d.y = VIEW.groundY - d.radius;
         d.bounces += 1;
+        d.justBounced = true;
         if (d.bounces >= 2 || Math.abs(d.vy) < 120) {
           d.vy = 0;
           d.vx *= 0.25;

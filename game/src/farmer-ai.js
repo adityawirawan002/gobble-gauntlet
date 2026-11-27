@@ -67,7 +67,7 @@ export function alertFarmerToDecoy(farmer, decoy) {
   return true;
 }
 
-export function updateFarmerAI(farmer, turkey, decoys, stageConfig, dt, onSpawnKnife, onFooled) {
+export function updateFarmerAI(farmer, turkey, decoys, stageConfig, dt, onSpawnKnife, onFooled, ovens = []) {
   let events = EVENTS.NONE;
   farmer.lanternSwing += dt;
   if (farmer.throwCooldown > 0) farmer.throwCooldown = Math.max(0, farmer.throwCooldown - dt);
@@ -121,7 +121,7 @@ export function updateFarmerAI(farmer, turkey, decoys, stageConfig, dt, onSpawnK
 
   // Gentle rubber-banding if turkey sprints way far ahead (keeps dramatic tension without cheap teleporting).
   let rubberMult = 1;
-  if (!turkey.hidden && dx > FARMER_AI_CONFIG.rubberBandFarDist && farmer.state !== FARMER_STATES.INVESTIGATE) {
+  if (!turkey.hidden && dx > FARMER_AI_CONFIG.rubberBandFarDist && farmer.badgeText !== '? HUH?') {
     rubberMult = FARMER_AI_CONFIG.rubberBandBoost;
     farmer.state = FARMER_STATES.CHASE;
     farmer.lastSeenX = turkeyCenterX;
@@ -169,7 +169,13 @@ export function updateFarmerAI(farmer, turkey, decoys, stageConfig, dt, onSpawnK
       farmer.lungeCooldown = FARMER_AI_CONFIG.lungeCooldown;
       farmer.lungeDir = farmer.facing;
       farmer.badgeText = '! LUNGE!';
-    } else if (absDx > 165 && absDx < 530 && farmer.throwCooldown <= 0 && !turkey.hidden) {
+    } else if (
+      absDx > 165 &&
+      absDx < 530 &&
+      farmer.throwCooldown <= 0 &&
+      !turkey.hidden &&
+      !ovens.some((o) => farmer.x + farmer.w > o.x - 18 && farmer.x < o.x + o.w + 18)
+    ) {
       // Wind up a spinning carving knife throw!
       farmer.state = FARMER_STATES.THROW_KNIFE;
       farmer.stateTimer = FARMER_AI_CONFIG.throwWindup;
@@ -198,7 +204,21 @@ export function updateFarmerAI(farmer, turkey, decoys, stageConfig, dt, onSpawnK
     }
   }
 
-  farmer.x += farmer.vx * dt;
+  // Advance along corridor; if winding up a throw or searching near an oven, step clear onto open floor.
+  let nextX = farmer.x + farmer.vx * dt;
+  for (let i = 0; i < ovens.length; i += 1) {
+    const o = ovens[i];
+    const overlapping = nextX + farmer.w > o.x - 12 && nextX < o.x + o.w + 12;
+    if (!overlapping) continue;
+    if (farmer.state === FARMER_STATES.THROW_KNIFE || Math.abs(farmer.vx) < 85) {
+      const clearLeft = o.x - farmer.w - 16;
+      const clearRight = o.x + o.w + 16;
+      const goalX = Math.abs(nextX - clearLeft) <= Math.abs(nextX - clearRight) ? clearLeft : clearRight;
+      const step = Math.sign(goalX - nextX) * Math.min(Math.abs(goalX - nextX), chaseSpeed * dt);
+      nextX += step;
+    }
+  }
+  farmer.x = nextX;
   if (farmer.x < 18) farmer.x = 18;
   if (farmer.x > stageConfig.length - 180) farmer.x = stageConfig.length - 180;
 

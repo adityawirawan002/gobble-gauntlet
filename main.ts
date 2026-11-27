@@ -1,10 +1,10 @@
-// Gobble Gauntlet entry packager for make.fun's turkey-run-game-01 bounty.
+// Gobble Gauntlet v2 entry packager for make.fun's turkey-run-game-01 bounty.
 // Stages the offline HTML5 game/ directory and screenshots/ into the target output
 // folder and writes the canonical dossier.json verified by the competition gate.
 
-import { cpSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import type { Stats } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { dirname, extname, resolve } from 'node:path';
 import { fileURLToPath as uriToPath } from 'node:url';
 import { buildDossier as compileEntryDossier } from './vendor/makefun-game.ts';
 import type { DossierCaps } from './vendor/makefun-game.ts';
@@ -64,6 +64,23 @@ function verifyAssets(paths: BundleLocations): void {
   }
   if (!indexInfo.isFile()) {
     throw new Error(`Gobble Gauntlet packaging failed: ${indexPage} must be a regular file`);
+  }
+
+  const shotFiles = readdirSync(paths.screenshotsSourceDir)
+    .filter((name) => ['.jpg', '.jpeg', '.png'].includes(extname(name).toLowerCase()))
+    .sort();
+  if (shotFiles.length < 3 || shotFiles.length > GOBBLE_GATE_CAPS.screenshots.max) {
+    throw new Error(
+      `Gobble Gauntlet packaging failed: expected 3..${GOBBLE_GATE_CAPS.screenshots.max} screenshots, found ${shotFiles.length}`,
+    );
+  }
+  for (const name of shotFiles) {
+    const shotSize = statSync(resolve(paths.screenshotsSourceDir, name)).size;
+    if (shotSize <= 0 || shotSize > GOBBLE_GATE_CAPS.screenshots.max_bytes) {
+      throw new Error(
+        `Gobble Gauntlet packaging failed: screenshot ${name} size (${shotSize} B) out of bounds`,
+      );
+    }
   }
 }
 

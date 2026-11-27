@@ -84,8 +84,8 @@ export function emitSparkBurst(sys, rng, x, y, color = '#FFE066', count = 10) {
   }
 }
 
-export function emitSoundRipple(sys, x, y, color = '#FFE066', maxRadius = 92) {
-  sys.ripples.push({ x, y, radius: 12, maxRadius, life: 0.55, maxLife: 0.55, color });
+export function emitSoundRipple(sys, x, y, color = '#FFE066', maxRadius = 92, startRadius = 12) {
+  sys.ripples.push({ x, y, radius: startRadius, startRadius, maxRadius, life: 0.55, maxLife: 0.55, color });
 }
 
 export function emitFloatingCallout(sys, x, y, text, color = '#FFE066', scale = 1) {
@@ -104,8 +104,8 @@ export function emitFloatingCallout(sys, x, y, text, color = '#FFE066', scale = 
     text,
     color,
     scale,
-    life: 1.05,
-    maxLife: 1.05,
+    life: 1.25,
+    maxLife: 1.25,
   });
 }
 
@@ -151,7 +151,8 @@ export function updateParticles(sys, dt, windX = -35) {
       continue;
     }
     const t = 1 - r.life / r.maxLife;
-    r.radius = 12 + (r.maxRadius - 12) * t;
+    const sr = r.startRadius ?? 12;
+    r.radius = sr + (r.maxRadius - sr) * t;
   }
 
   for (let i = sys.callouts.length - 1; i >= 0; i -= 1) {
