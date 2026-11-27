@@ -1,134 +1,243 @@
-// Boot and the one loop: input is read every frame, the world advances in fixed 1/60 s steps
-// (several in a slow frame, none in a fast one), and the renderer paints what is there. The game
-// moves between four screens: title, play, paused and game over.
-//
-// ?seed=N fixes the falling pattern. ?shot=start|play|end (with &seed=N) stages that scene
-// instead of running the loop, paints it twice and sets window.__shotReady for a screenshot.
-import { BEST_KEY, LIVES, STEP } from './config.js';
-import { createRandom } from './random.js';
-import { createWorld, EVENT_HIT, EVENT_OVER } from './world.js';
-import { ACTION_CONFIRM, ACTION_PAUSE, createInput } from './input.js';
-import { createRenderer, SCREEN_OVER, SCREEN_PAUSED, SCREEN_PLAY, SCREEN_TITLE } from './render.js';
-import { stageShot } from './shots.js';
+// Entry point for Gobble Gauntlet: DPR canvas setup, fixed-step game loop, UI click routing, and audio wiring.
 
-/** The longest frame the loop catches up on; a longer stall (a hidden tab) is dropped, not replayed. */
-const MAX_FRAME = 0.25;
+import { HarvestAudioSynth } from './audio-synth.js';
+import { EVENTS, MODES, pointInRect, SCREENS, UI_RECTS, VIEW } from './constants.js';
+import { createInputController } from './input.js';
+import { renderGameFrame } from './renderer.js';
+import { applyDeterministicShot } from './shots.js';
+import { createEscapeWorld } from './world.js';
 
-const params = new URLSearchParams(window.location.search);
-const shot = params.get('shot');
-const seedParam = Number.parseInt(params.get('seed') ?? '', 10);
-const seed = Number.isInteger(seedParam) ? seedParam : Math.floor(Math.random() * 4294967296);
+export function bootstrapGobbleGauntlet() {
+  const canvas = document.getElementById('gobble-canvas');
+  const statusEl = document.getElementById('hud-sr');
+  if (!canvas) return null;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
 
-const canvas = document.getElementById('game');
-const status = document.getElementById('status');
-const world = createWorld(createRandom(seed));
-const renderer = createRenderer(canvas);
+  const params = new URLSearchParams(window.location.search);
+  const seedParam = Number(params.get('seed'));
+  const seed = Number.isFinite(seedParam) && seedParam > 0 ? Math.floor(seedParam) : 1;
+  const shotParam = params.get('shot');
 
-function readBest() {
-  try {
-    return Number.parseInt(window.localStorage.getItem(BEST_KEY) ?? '0', 10) || 0;
-  } catch {
-    return 0;
-  }
-}
-
-function saveBest(value) {
-  try {
-    window.localStorage.setItem(BEST_KEY, String(value));
-  } catch {
-    // Storage can be off (private windows): the best score then lasts this visit only.
-  }
-}
-
-function runShot(name) {
-  const scene = stageShot(name, world);
-  let painted = 0;
-  function paint() {
-    renderer.draw(world.state, scene.screen, scene.best);
-    painted += 1;
-    if (painted < 2) requestAnimationFrame(paint);
-    else window.__shotReady = true;
-  }
-  requestAnimationFrame(paint);
-}
-
-function runGame() {
-  const input = createInput(canvas);
-  let screen = SCREEN_TITLE;
-  let best = readBest();
+  const world = createEscapeWorld(seed);
+  const audio = new HarvestAudioSynth();
   let accumulator = 0;
-  let last = performance.now();
+  let lastTimestamp = 0;
+  let frozenShot = false;
 
-  // Screen readers (and anyone watching the page's text) hear the screen changes and each hit.
-  function announce(message) {
-    status.textContent = message;
-  }
-
-  function startGame() {
-    world.reset();
-    accumulator = 0;
-    screen = SCREEN_PLAY;
-    announce(`Playing. ${LIVES} lives.`);
-  }
-
-  function endGame() {
-    screen = SCREEN_OVER;
-    if (world.state.score > best) {
-      best = world.state.score;
-      saveBest(best);
+  function syncCanvasResolution() {
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const targetW = Math.round(VIEW.width * dpr);
+    const targetH = Math.round(VIEW.height * dpr);
+    if (canvas.width !== targetW || canvas.height !== targetH) {
+      canvas.width = targetW;
+      canvas.height = targetH;
     }
-    announce(`Game over. Score ${world.state.score}. Best ${best}.`);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
 
-  function handleActions() {
-    const actions = input.takeActions();
-    if (actions & ACTION_CONFIRM && (screen === SCREEN_TITLE || screen === SCREEN_OVER)) startGame();
-    else if (actions & ACTION_PAUSE && screen === SCREEN_PLAY) {
-      screen = SCREEN_PAUSED;
-      announce('Paused.');
-    } else if (actions & (ACTION_PAUSE | ACTION_CONFIRM) && screen === SCREEN_PAUSED) {
-      screen = SCREEN_PLAY;
-      announce('Playing.');
+  function announce(text) {
+    if (statusEl) statusEl.textContent = text;
+  }
+
+  function dispatchAudioEvents(events) {
+    if (!events) return;
+    if (events & EVENTS.JUMP) audio.playJump();
+    if (events & EVENTS.FLUTTER) audio.playFlutter();
+    if (events & EVENTS.DASH) audio.playDash();
+    if (events & EVENTS.HIDE) audio.playHideRustle();
+    if (events & EVENTS.DECOY) audio.playDecoyBounce();
+    if (events & EVENTS.CORN) audio.playCornChime(world.state.combo);
+    if (events & EVENTS.BERRY) audio.playBerryHeal();
+    if (events & EVENTS.CLOSE_SHAVE) audio.playCloseShave();
+    if (events & EVENTS.SPOTTED) audio.playAlertSting();
+    if (events & EVENTS.KNIFE_THROW) audio.playKnifeWhoosh();
+    if (events & EVENTS.OVEN_BURST) audio.playOvenRoar();
+    if (events & EVENTS.BOUNCE) audio.playBouncePad();
+    if (events & EVENTS.HIT) audio.playHitThud();
+    if (events & EVENTS.STAGE_CLEAR) {
+      audio.playStageClear();
+      announce(`Stage ${world.state.stage.id} cleared! Score ${world.state.score}.`);
+    }
+    if (events & EVENTS.VICTORY) {
+      audio.playVictoryFanfare();
+      announce(`Escaped the table! Final score ${world.state.score}, Rank ${world.state.rank}.`);
+    }
+    if (events & EVENTS.CAUGHT) {
+      audio.playCaughtJingle();
+      announce(`Almost dinner! Caught in ${world.state.stage.title}. Score ${world.state.score}.`);
     }
   }
 
-  function step() {
-    if (screen === SCREEN_TITLE) {
-      world.step(STEP, 0, true);
-      return;
-    }
-    const events = world.step(STEP, input.direction(), false);
-    if (events & EVENT_OVER) endGame();
-    else if (events & EVENT_HIT) announce(world.state.lives === 1 ? 'Hit. 1 life left.' : `Hit. ${world.state.lives} lives left.`);
+  function startRunFromUi() {
+    frozenShot = false;
+    audio.unlock();
+    world.startNewRun(world.state.mode);
+    audio.playGobble(1.1);
+    announce(`Run started in ${world.state.stage.title}.`);
   }
 
-  function frame(now) {
-    requestAnimationFrame(frame);
-    accumulator += Math.min((now - last) / 1000, MAX_FRAME);
-    last = now;
-    handleActions();
-    if (screen === SCREEN_TITLE || screen === SCREEN_PLAY) {
-      while (accumulator >= STEP && (screen === SCREEN_TITLE || screen === SCREEN_PLAY)) {
-        step();
-        accumulator -= STEP;
+  function detectHoverTarget(px, py) {
+    const scr = world.state.screen;
+    if (scr === SCREENS.TITLE) {
+      if (pointInRect(px, py, UI_RECTS.titlePlayBtn)) return 'titlePlayBtn';
+      if (pointInRect(px, py, UI_RECTS.titleModeBtn)) return 'titleModeBtn';
+    } else if (scr === SCREENS.PLAY) {
+      if (pointInRect(px, py, UI_RECTS.hudPauseBtn)) return 'hudPauseBtn';
+      if (pointInRect(px, py, UI_RECTS.hudMuteBtn)) return 'hudMuteBtn';
+    } else if (scr === SCREENS.PAUSE) {
+      if (pointInRect(px, py, UI_RECTS.pauseResumeBtn)) return 'pauseResumeBtn';
+      if (pointInRect(px, py, UI_RECTS.pauseRestartBtn)) return 'pauseRestartBtn';
+      if (pointInRect(px, py, UI_RECTS.pauseTitleBtn)) return 'pauseTitleBtn';
+    } else if (scr === SCREENS.END) {
+      if (pointInRect(px, py, UI_RECTS.endPlayAgainBtn)) return 'endPlayAgainBtn';
+      if (pointInRect(px, py, UI_RECTS.endTitleBtn)) return 'endTitleBtn';
+    }
+    return null;
+  }
+
+  exportHoverCursor();
+  function exportHoverCursor() {
+    canvas.style.cursor = world.state.hoverTarget ? 'pointer' : 'default';
+  }
+
+  function handleUiClick(px, py) {
+    const target = detectHoverTarget(px, py);
+    world.state.hoverTarget = target;
+    exportHoverCursor();
+    if (!target) return false;
+
+    audio.unlock();
+    if (target === 'titlePlayBtn') {
+      startRunFromUi();
+      return true;
+    }
+    if (target === 'titleModeBtn') {
+      world.state.mode = world.state.mode === MODES.ESCAPE ? MODES.ENDLESS : MODES.ESCAPE;
+      audio.playCornChime(2);
+      return true;
+    }
+    if (target === 'hudPauseBtn') {
+      world.state.screen = SCREENS.PAUSE;
+      announce('Game paused.');
+      return true;
+    }
+    if (target === 'hudMuteBtn') {
+      world.state.muted = audio.toggleMute();
+      return true;
+    }
+    if (target === 'pauseResumeBtn') {
+      world.state.screen = SCREENS.PLAY;
+      announce('Resumed.');
+      return true;
+    }
+    if (target === 'pauseRestartBtn') {
+      startRunFromUi();
+      return true;
+    }
+    if (target === 'pauseTitleBtn') {
+      world.resetToTitle();
+      announce('Returned to title.');
+      return true;
+    }
+    if (target === 'endPlayAgainBtn') {
+      startRunFromUi();
+      return true;
+    }
+    if (target === 'endTitleBtn') {
+      world.resetToTitle();
+      announce('Returned to title.');
+      return true;
+    }
+    return false;
+  }
+
+  const input = createInputController(canvas, {
+    onUserGesture() {
+      audio.unlock();
+    },
+    onHover(px, py) {
+      world.state.hoverTarget = detectHoverTarget(px, py);
+      exportHoverCursor();
+    },
+    onClick(px, py) {
+      if (world.state.screen === SCREENS.STAGE_CLEAR) {
+        world.advanceStage();
+        return true;
       }
-    } else {
-      accumulator = 0;
-    }
-    renderer.draw(world.state, screen, best);
-  }
-
-  // Leaving the tab pauses a running game rather than letting knives fall unseen.
-  document.addEventListener('visibilitychange', () => {
-    if (document.hidden && screen === SCREEN_PLAY) {
-      screen = SCREEN_PAUSED;
-      announce('Paused.');
-    }
+      return handleUiClick(px, py);
+    },
+    onConfirm() {
+      audio.unlock();
+      if (world.state.screen === SCREENS.TITLE || world.state.screen === SCREENS.END) {
+        startRunFromUi();
+      } else if (world.state.screen === SCREENS.STAGE_CLEAR) {
+        world.advanceStage();
+      }
+    },
+    onPause() {
+      if (world.state.screen === SCREENS.PLAY) {
+        world.state.screen = SCREENS.PAUSE;
+        announce('Paused.');
+      } else if (world.state.screen === SCREENS.PAUSE) {
+        world.state.screen = SCREENS.PLAY;
+        announce('Resumed.');
+      }
+    },
+    onRestart() {
+      if (world.state.screen !== SCREENS.TITLE) {
+        startRunFromUi();
+      }
+    },
+    onMute() {
+      audio.unlock();
+      world.state.muted = audio.toggleMute();
+    },
   });
 
-  announce('Turkey Dodge. Press Space or click to start.');
-  requestAnimationFrame(frame);
+  syncCanvasResolution();
+  window.addEventListener('resize', syncCanvasResolution);
+
+  // Deterministic shot mode (?shot=title|farm|kitchen|end&seed=1).
+  if (shotParam) {
+    frozenShot = applyDeterministicShot(world, shotParam.toLowerCase());
+    renderGameFrame(ctx, world.state);
+    window.__GOBBLE_READY__ = {
+      shot: shotParam,
+      screen: world.state.screen,
+      stage: world.state.stage.id,
+      score: world.state.score,
+      lives: world.state.lives,
+      outcome: world.state.outcome,
+      rank: world.state.rank,
+      closeShaves: world.state.stats.closeShaves,
+      badges: world.state.earnedBadges.map((b) => b.label),
+    };
+  }
+
+  function runGameLoop(timestamp) {
+    if (!lastTimestamp) lastTimestamp = timestamp;
+    const rawDt = Math.min(VIEW.maxFrameDt, Math.max(0, (timestamp - lastTimestamp) / 1000));
+    lastTimestamp = timestamp;
+
+    if (!frozenShot) {
+      accumulator += rawDt;
+      while (accumulator >= VIEW.fixedDt) {
+        const frameInput = input.sampleFrameInput();
+        const events = world.stepWorld(VIEW.fixedDt, frameInput);
+        dispatchAudioEvents(events);
+        const chased = world.state.farmer.badgeText.startsWith('!');
+        audio.tickMusic(VIEW.fixedDt, world.state.screen === SCREENS.PLAY, world.state.stageIndex, chased);
+        accumulator -= VIEW.fixedDt;
+      }
+      renderGameFrame(ctx, world.state);
+    }
+
+    window.requestAnimationFrame(runGameLoop);
+  }
+
+  window.requestAnimationFrame(runGameLoop);
+  return { world, audio, input };
 }
 
-if (shot) runShot(shot);
-else runGame();
+bootstrapGobbleGauntlet();

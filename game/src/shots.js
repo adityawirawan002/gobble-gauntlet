@@ -1,79 +1,222 @@
-// The screenshot scenes behind ?shot=start|play|end. Each one plays the real rules forward from a
-// fresh world for a fixed number of steps, steered by a simple autopilot (look ahead each way the
-// turkey could move, keep clear of knives, chase the lowest corn when that is safe), so the frame
-// is what a short game really looks like and the same seed always gives the same frame.
-import { FIELD, PLAYER, STEP } from './config.js';
-import { EVENT_OVER, KIND_KNIFE } from './world.js';
-import { SCREEN_OVER, SCREEN_PLAY, SCREEN_TITLE } from './render.js';
+// Deterministic real-simulation driver for ?shot=title|farm|kitchen|end&seed=1 captures.
 
-const START_SECONDS = 5;
-const PLAY_SECONDS = 26;
-const END_LIMIT_SECONDS = 600;
-/**
- * How far ahead, in seconds, the autopilot checks each way it could move: the play scene's pilot
- * looks well ahead and keeps all its lives; the end scene's looks only a moment ahead, so it is
- * caught out once the knives speed up, as a hurried player is.
- */
-const HORIZON_PLAY = 0.7;
-const HORIZON_END = 0.25;
-const SAMPLE = 1 / 30;
-const DIRECTIONS = [0, -1, 1];
-/** Extra room, each side, it keeps between the turkey and a knife. */
-const MARGIN = 10;
+import { MODES, SCREENS, VIEW } from './constants.js';
 
-/** Seconds until moving in `direction` (-1, 0, 1) runs the turkey into a knife; Infinity when it never does. */
-function timeToHit(state, direction, horizon) {
-  const player = state.player;
-  for (let t = SAMPLE; t <= horizon; t += SAMPLE) {
-    const x = Math.min(FIELD.width - player.width, Math.max(0, player.x + direction * PLAYER.speed * t));
-    for (let index = 0; index < state.items.length; index += 1) {
-      const item = state.items[index];
-      if (!item.active || item.kind !== KIND_KNIFE) continue;
-      const y = item.y + item.speed * t;
-      if (y + item.height > player.y && y < player.y + player.height && item.x < x + player.width + MARGIN && item.x + item.width > x - MARGIN) return t;
+const IDLE_INPUT = Object.freeze({
+  moveX: 0,
+  jumpPressed: false,
+  jumpHeld: false,
+  dashPressed: false,
+  hidePressed: false,
+  hideHeld: false,
+  decoyPressed: false,
+  pointerX: VIEW.width * 0.65,
+  pointerY: VIEW.height * 0.5,
+  pointerInside: false,
+});
+
+function createSmartAutopilot(state, opts = {}) {
+  const { turkey, farmer, layout } = state;
+  const tx = turkey.x + turkey.w * 0.5;
+  const ty = turkey.y + turkey.h * 0.5;
+  const input = { ...IDLE_INPUT, moveX: opts.moveX ?? 1 };
+
+  // Proactively jump & flutter well clear of every roasting oven (idle, telegraphing, or erupting)!
+  for (let i = 0; i < layout.ovens.length; i += 1) {
+    const o = layout.ovens[i];
+    const dist = o.x - tx;
+    if (dist > -45 && dist < 175) {
+      if (turkey.grounded && dist > 10) input.jumpPressed = true;
+      input.jumpHeld = true;
+      if (o.state === 'erupting' && dist < 95 && dist > -35 && ty > o.y - 55 && turkey.stamina >= 0.6) {
+        input.dashPressed = true;
+      }
     }
   }
-  return Infinity;
-}
 
-/** Of the safe ways to move, the one toward the lowest corn (or the centre); else the one that is hit last. */
-function autopilot(state, horizon) {
-  const player = state.player;
-  let corn = null;
-  for (let index = 0; index < state.items.length; index += 1) {
-    const item = state.items[index];
-    if (item.active && item.kind !== KIND_KNIFE && (corn === null || item.y > corn.y)) corn = item;
-  }
-  const target = corn === null ? FIELD.width / 2 : corn.x + corn.width / 2;
-  const centre = player.x + player.width / 2;
-  const wanted = target > centre + 8 ? 1 : target < centre - 8 ? -1 : 0;
-  let best = wanted;
-  let bestTime = timeToHit(state, wanted, horizon);
-  for (let index = 0; index < DIRECTIONS.length && bestTime !== Infinity; index += 1) {
-    const time = timeToHit(state, DIRECTIONS[index], horizon);
-    if (time > bestTime) {
-      bestTime = time;
-      best = DIRECTIONS[index];
+  // Hop over spilled gravy puddles cleanly.
+  for (let i = 0; i < layout.gravyPuddles.length; i += 1) {
+    const g = layout.gravyPuddles[i];
+    const dist = g.x - tx;
+    if (dist > -8 && dist < 76 && turkey.grounded) {
+      input.jumpPressed = true;
     }
   }
-  return best;
+
+  // Dash cleanly through incoming carving knives to trigger Close Shaves without getting hit!
+  for (let i = 0; i < layout.knives.length; i += 1) {
+    const k = layout.knives[i];
+    const dist = Math.hypot(k.x - tx, k.y - ty);
+    if (dist < 145) {
+      if (turkey.stamina >= 0.6) input.dashPressed = true;
+      else if (turkey.grounded) input.jumpPressed = true;
+      input.jumpHeld = true;
+    }
+  }
+
+  // If Farmer closes in dangerously near, dash ahead!
+  if (tx - (farmer.x + farmer.w * 0.5) < 118 && turkey.stamina >= 0.6) {
+    input.dashPressed = true;
+  }
+
+  // Hold flutter glide when airborne over hazards.
+  if (!turkey.grounded && turkey.vy > 20) {
+    input.jumpHeld = true;
+  }
+
+  // Optionally toss an Acorn Decoy once to earn Decoy Master badge!
+  if (opts.useDecoy && state.stats.decoysFooled === 0 && turkey.decoyCooldown <= 0 && tx > 480 && tx - farmer.x < 380) {
+    input.decoyPressed = true;
+  }
+
+  // Optionally duck briefly into stealth cover when safe to earn Ghost Turkey badge!
+  if (
+    opts.useStealth &&
+    state.stats.stealthEscapes === 0 &&
+    turkey.nearbyCover &&
+    tx - farmer.x > 165 &&
+    tx - farmer.x < 350
+  ) {
+    input.moveX = 0;
+    input.hidePressed = !turkey.hidden;
+    input.hideHeld = true;
+  }
+
+  return input;
 }
 
-/**
- * Set `world` to the named scene (start, play or end; any other name is start) and return the
- * screen to draw over it and the best score to show.
- */
-export function stageShot(name, world) {
-  world.reset();
-  if (name !== 'play' && name !== 'end') {
-    for (let index = 0; index < START_SECONDS / STEP; index += 1) world.step(STEP, 0, true);
-    return { screen: SCREEN_TITLE, best: 0 };
+export function applyDeterministicShot(world, shotName) {
+  const dt = VIEW.fixedDt;
+
+  if (shotName === 'title' || shotName === 'start') {
+    world.resetToTitle();
+    // Step real title animation until a gleaming carving knife arcs cleanly between Farmer and dashing Barnaby!
+    for (let i = 0; i < 66; i += 1) {
+      world.stepWorld(dt, IDLE_INPUT);
+    }
+    return true;
   }
-  const limit = name === 'end' ? END_LIMIT_SECONDS : PLAY_SECONDS;
-  const horizon = name === 'end' ? HORIZON_END : HORIZON_PLAY;
-  for (let index = 0; index < limit / STEP; index += 1) {
-    if (world.step(STEP, autopilot(world.state, horizon), false) & EVENT_OVER) break;
+
+  if (shotName === 'farm' || shotName === 'play') {
+    world.startNewRun(MODES.ESCAPE);
+    // Run real Stage 1 Golden Farmyard gameplay into the showcase action zone around Oven #1 (x=980) & Hay Bale #2 (x=1215).
+    for (let i = 0; i < 480; i += 1) {
+      const st = world.state;
+      const inp = createSmartAutopilot(st, { useDecoy: false, useStealth: false });
+      // Pace near x=1010..1130 so the Farmer closes in with '! SPOTTED!' & throws a real spinning carving knife!
+      if (st.turkey.x > 1020 && st.layout.knives.length === 0) {
+        inp.moveX = st.turkey.x > 1135 ? -0.35 : 0.2;
+      }
+      world.stepWorld(dt, inp);
+      const oven1 = st.layout.ovens[0];
+      const activeThrown = st.layout.knives.find(
+        (k) => k.kind === 'thrown' && k.x > st.farmer.x + 115 && k.x < st.turkey.x + 160 && k.y < VIEW.groundY - 45,
+      );
+      if (
+        st.turkey.x > 995 &&
+        st.turkey.x < 1210 &&
+        st.farmer.x > st.cameraX + 45 &&
+        st.farmer.x < st.turkey.x - 165 &&
+        oven1 &&
+        oven1.state === 'erupting' &&
+        activeThrown
+      ) {
+        // Trigger a dramatic Feather Dash + Flutter right next to the flying knife!
+        if (st.turkey.stamina >= 0.6) {
+          world.stepWorld(dt, { ...IDLE_INPUT, moveX: 1, dashPressed: true, jumpPressed: st.turkey.grounded, jumpHeld: true });
+        }
+        for (let f = 0; f < 5; f += 1) {
+          world.stepWorld(dt, { ...IDLE_INPUT, moveX: 1, jumpHeld: true });
+        }
+        break;
+      }
+    }
+    world.state.bannerTimer = 0;
+    return true;
   }
-  const over = world.state.lives === 0;
-  return { screen: over ? SCREEN_OVER : SCREEN_PLAY, best: world.state.score };
+
+  if (shotName === 'kitchen') {
+    world.startNewRun(MODES.ESCAPE);
+    // Play cleanly through real Stage 1 & Stage 2 into Stage 3 (Thanksgiving Kitchen)!
+    let steps = 0;
+    while (world.state.stageIndex < 2 && steps < 2800) {
+      steps += 1;
+      const st = world.state;
+      if (st.screen === SCREENS.STAGE_CLEAR) {
+        world.advanceStage();
+        continue;
+      }
+      if (st.screen === SCREENS.END) {
+        world.startNewRun(MODES.ESCAPE);
+        continue;
+      }
+      world.stepWorld(dt, createSmartAutopilot(st, { useDecoy: true, useStealth: false }));
+    }
+
+    // Play Stage 3 Kitchen right to the thrilling climax near Copper Pot (x=2765), Oven #4 (x=3035), and OPEN ESCAPE WINDOW (x=3308)!
+    for (let i = 0; i < 1100; i += 1) {
+      const st = world.state;
+      if (st.screen === SCREENS.END) break;
+      const inp = createSmartAutopilot(st, { useDecoy: false, useStealth: false });
+      if (st.turkey.x > 2760 && st.turkey.x < 3060) {
+        // Keep Chef-Farmer on screen and let the final oven erupt with a thrown knife in flight!
+        if (st.farmer.x < st.cameraX + 95 || !st.layout.knives.some((k) => k.kind === 'thrown')) {
+          inp.moveX = st.turkey.x > 2910 ? -0.3 : 0.15;
+        }
+      }
+      world.stepWorld(dt, inp);
+
+      const finalOven = st.layout.ovens[st.layout.ovens.length - 1];
+      const thrownKnife = st.layout.knives.find(
+        (k) => k.kind === 'thrown' && k.x > st.farmer.x + 95 && k.x < st.cameraX + 1140 && k.y < VIEW.groundY - 40,
+      );
+      if (
+        st.turkey.x > 2740 &&
+        st.turkey.x < 3040 &&
+        st.farmer.x > st.cameraX + 40 &&
+        st.farmer.x < st.turkey.x - 140 &&
+        finalOven &&
+        finalOven.state === 'erupting' &&
+        thrownKnife
+      ) {
+        // Launch dramatic flutter-dash toward the sunlit Open Escape Window!
+        world.stepWorld(dt, { ...IDLE_INPUT, moveX: 1, jumpPressed: st.turkey.grounded, dashPressed: st.turkey.stamina >= 0.6, jumpHeld: true });
+        for (let f = 0; f < 6; f += 1) {
+          world.stepWorld(dt, { ...IDLE_INPUT, moveX: 1, jumpHeld: true });
+        }
+        break;
+      }
+    }
+    world.state.bannerTimer = 0;
+    return true;
+  }
+
+  if (shotName === 'end') {
+    world.startNewRun(MODES.ESCAPE);
+    // Play a genuine full 3-stage victorious escape through the Kitchen Open Escape Window!
+    let steps = 0;
+    let stealthFrames = 0;
+    while (world.state.screen !== SCREENS.END && steps < 5200) {
+      steps += 1;
+      const st = world.state;
+      if (st.screen === SCREENS.STAGE_CLEAR) {
+        world.advanceStage();
+        continue;
+      }
+      const useStealth = st.stageIndex === 0 && stealthFrames < 72;
+      const inp = createSmartAutopilot(st, { useDecoy: true, useStealth });
+      if (st.turkey.hidden) stealthFrames += 1;
+      world.stepWorld(dt, inp);
+      if (st.screen === SCREENS.END && st.outcome !== 'escaped') {
+        world.startNewRun(MODES.ESCAPE);
+        stealthFrames = 0;
+      }
+    }
+    for (let i = 0; i < 16; i += 1) {
+      world.stepWorld(dt, IDLE_INPUT);
+    }
+    return true;
+  }
+
+  return false;
 }
