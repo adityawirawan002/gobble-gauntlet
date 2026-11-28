@@ -1,269 +1,147 @@
-// Deterministic real-simulation driver for ?shot=title|farm|kitchen|end&seed=1 captures.
+// Deterministic real-simulation screenshot composer for ?shot=title|farm|kitchen|end&seed=1.
 
 import { MODES, SCREENS, VIEW } from './constants.js';
-
-const IDLE_INPUT = Object.freeze({
-  moveX: 0,
-  jumpPressed: false,
-  jumpHeld: false,
-  dashPressed: false,
-  hidePressed: false,
-  hideHeld: false,
-  decoyPressed: false,
-  pointerX: VIEW.width * 0.78,
-  pointerY: VIEW.height * 0.5,
-  pointerInside: false,
+const IDLE = Object.freeze({
+  moveX: 0, jumpPressed: false, jumpHeld: false, dashPressed: false,
+  hidePressed: false, hideHeld: false, decoyPressed: false,
+  pointerX: 640, pointerY: 400, pointerInside: false,
 });
 
-function createSmartAutopilot(state, opts = {}) {
-  const { turkey, farmer, layout } = state;
-  const tx = turkey.x + turkey.w * 0.5;
-  const ty = turkey.y + turkey.h * 0.5;
-  const input = { ...IDLE_INPUT, moveX: opts.moveX ?? 1 };
-
-  for (let i = 0; i < layout.ovens.length; i += 1) {
-    const o = layout.ovens[i];
-    const dist = o.x - tx;
-    if (dist > -48 && dist < 185) {
-      if (turkey.grounded && dist > 10) input.jumpPressed = true;
-      input.jumpHeld = true;
-      if (o.state === 'erupting' && dist < 105 && dist > -40 && ty > o.y - 68 && turkey.stamina >= 0.6) {
-        input.dashPressed = true;
-      }
-    }
+function autopilot(state, opts = {}) {
+  const t = state.turkey, f = state.farmer, layout = state.layout;
+  const tcX = t.x + t.w * 0.5, tcY = t.y + t.h * 0.5;
+  const inp = { ...IDLE, moveX: 1 };
+  if (opts.useStealth && t.nearbyCover && !t.hidden && f.badgeText.startsWith('!') && tcX - f.x < 340) return { ...IDLE, hidePressed: true };
+  if (t.hidden) {
+    if (opts.useStealth && f.x + f.w < t.x + 115 && (t.nearbyCover?.flushProgress || 0) < 0.52) return { ...IDLE };
+    return { ...IDLE, moveX: 1, jumpPressed: true, jumpHeld: true };
   }
-
-  for (let i = 0; i < layout.gravyPuddles.length; i += 1) {
-    const g = layout.gravyPuddles[i];
-    const dist = g.x - tx;
-    if (dist > -8 && dist < 76 && turkey.grounded) input.jumpPressed = true;
+  if (opts.useDecoy && t.decoyCooldown <= 0 && f.badgeText.startsWith('!') && tcX - f.x < 390 && tcX > 650) inp.decoyPressed = true;
+  if (state.stage.id === 3 && tcX >= 3320 && t.y > layout.exit.y + 18) {
+    inp.moveX = tcX < 3426 ? 0.8 : tcX > 3458 ? -0.65 : 0.25;
+    if (t.grounded) inp.jumpPressed = true;
+    inp.jumpHeld = true;
+    return inp;
   }
-
-  for (let i = 0; i < layout.knives.length; i += 1) {
-    const k = layout.knives[i];
-    const dist = Math.hypot(k.x - tx, k.y - ty);
-    if (dist < 145) {
-      if (turkey.stamina >= 0.6) input.dashPressed = true;
-      else if (turkey.grounded) input.jumpPressed = true;
-      input.jumpHeld = true;
-    }
-  }
-
-  if (tx - (farmer.x + farmer.w * 0.5) < 122 && turkey.stamina >= 0.6) input.dashPressed = true;
-  if (!turkey.grounded && turkey.vy > 20) input.jumpHeld = true;
-
-  if (opts.useDecoy && state.stats.decoysFooled === 0 && turkey.decoyCooldown <= 0 && tx > 480 && tx - farmer.x < 380) {
-    input.decoyPressed = true;
-  }
-
-  if (
-    opts.useStealth &&
-    state.stats.stealthEscapes === 0 &&
-    turkey.nearbyCover &&
-    tx - farmer.x > 165 &&
-    tx - farmer.x < 350
-  ) {
-    input.moveX = 0;
-    input.hidePressed = !turkey.hidden;
-    input.hideHeld = true;
-  }
-
-  return input;
+  const nextPlat = layout.platforms.find((p) => p.x - tcX > 18 && p.x - tcX < 185 && p.y < t.y + t.h - 24 && t.y + t.h - p.y <= 205);
+  const aheadOv = layout.ovens.find((o) => o.x - (t.x + t.w) > -16 && o.x - (t.x + t.w) < 125 && o.state !== 'idle');
+  const aheadPm = layout.pumpkins.find((rp) => rp.x - tcX > -12 && rp.x - tcX < 125 && Math.abs(rp.y - tcY) < 70);
+  const aheadGr = layout.gravyPuddles.find((g) => g.x - (t.x + t.w) > 0 && g.x - (t.x + t.w) < 60 && t.tier === 0);
+  if ((nextPlat || aheadOv || aheadPm || aheadGr) && t.grounded) { inp.jumpPressed = true; inp.jumpHeld = true; }
+  if (!t.grounded && t.vy > 10) inp.jumpHeld = true;
+  const nearK = layout.knives.find((k) => k.active && Math.hypot(k.x - tcX, k.y - tcY) < 122);
+  const nearN = layout.nets.find((n) => n.active && Math.hypot(n.x - tcX, n.y - tcY) < 126);
+  const inFl = aheadOv && aheadOv.state === 'erupting' && t.x + t.w > aheadOv.x - 16 && t.y + t.h > aheadOv.y - 54;
+  if ((nearK || nearN || inFl) && t.stamina >= 0.56 && t.dashIframes <= 0) inp.dashPressed = true;
+  return inp;
 }
 
 export function applyDeterministicShot(world, shotName) {
   const dt = VIEW.fixedDt;
-
-  if (shotName === 'title' || shotName === 'start') {
+  if (shotName === 'title') {
     world.resetToTitle();
-    for (let i = 0; i < 66; i += 1) world.stepWorld(dt, IDLE_INPUT);
+    for (let i = 0; i < 62; i += 1) world.stepWorld(dt, IDLE);
+    for (let i = 0; i < 120; i += 1) {
+      world.stepWorld(dt, IDLE);
+      const k = world.state.layout.knives[0];
+      if (k && k.x > 495 && k.x < 640 && k.y < 515 && world.state.turkey.y < 430) break;
+    }
     return true;
   }
-
-  if (shotName === 'farm' || shotName === 'play') {
-    world.startNewRun(MODES.ESCAPE);
-    let launched = false;
-    let tossedDecoy = false;
-    for (let i = 0; i < 320; i += 1) {
+  if (shotName === 'farm') {
+    world.startNewRun(MODES.ESCAPE, 0);
+    let tossed = false, bestSnap = false;
+    for (let i = 0; i < 420; i += 1) {
       const st = world.state;
-      const oven1 = st.layout.ovens[0];
-      const inp = { ...IDLE_INPUT, moveX: 1 };
-      const closeKnife = st.layout.knives.find(
-        (k) => Math.hypot(k.x - (st.turkey.x + 30), k.y - (st.turkey.y + 34)) < 135,
-      );
-
-      if (!launched) {
-        const timeToErupt = oven1.cycle - oven1.activeDur - oven1.phase;
-        const ovenWindow = oven1.state === 'erupting' || (oven1.state === 'telegraph' && timeToErupt < 0.34);
-        const hasThrown = st.layout.knives.some((k) => k.kind === 'thrown' && k.x > st.farmer.x + 40);
-        if (st.turkey.x < 680) {
-          inp.moveX = 1;
-          if (closeKnife && st.turkey.grounded) inp.jumpPressed = true;
-          if (!st.turkey.grounded && st.turkey.vy > 0) inp.jumpHeld = true;
-        } else if (!ovenWindow || !hasThrown || st.farmer.x < 480) {
-          const targetHold = Math.min(748, Math.max(705, st.farmer.x + 235));
-          inp.moveX = st.turkey.x > targetHold + 12 ? -0.45 : st.turkey.x < targetHold - 12 ? 0.45 : 0;
-          if (closeKnife && st.turkey.grounded) inp.jumpPressed = true;
-          if (!st.turkey.grounded && st.turkey.vy > 0) inp.jumpHeld = true;
+      if (st.stageIndex > 0) break;
+      const ov0 = st.layout.ovens[0];
+      const inp = autopilot(st);
+      if (st.turkey.x >= 560 && st.turkey.x <= 780) {
+        const jedReady = st.farmer.x >= 470 && st.farmer.x <= 720;
+        if (!jedReady || ov0.state !== 'erupting') {
+          inp.moveX = st.turkey.x > 700 ? -0.42 : st.turkey.x < 610 ? 0.42 : 0;
+          if (st.turkey.grounded && st.turkey.tier < 1) inp.jumpPressed = true;
+          inp.jumpHeld = true; inp.dashPressed = false;
         } else {
-          launched = true;
+          inp.moveX = 1; if (st.turkey.grounded) inp.jumpPressed = true; inp.jumpHeld = true;
+          if (!tossed && st.turkey.decoyCooldown <= 0) { inp.decoyPressed = true; tossed = true; }
+          if (st.turkey.x >= 775 && st.turkey.stamina >= 0.56 && st.turkey.dashIframes <= 0) inp.dashPressed = true;
         }
+      } else if (st.turkey.x > 780 && st.turkey.x <= 990) {
+        inp.moveX = 1; inp.jumpHeld = true;
+        if (!tossed && st.turkey.decoyCooldown <= 0) { inp.decoyPressed = true; tossed = true; }
+        if (st.turkey.stamina >= 0.56 && st.turkey.dashIframes <= 0 && ov0.state === 'erupting') inp.dashPressed = true;
       }
-
-      if (launched) {
-        inp.moveX = 1;
-        if (!st.turkey.grounded) inp.jumpHeld = true;
-        if (!tossedDecoy && st.turkey.decoyCooldown <= 0) {
-          inp.decoyPressed = true;
-          inp.pointerInside = true;
-          inp.pointerX = VIEW.width - 40;
-          tossedDecoy = true;
-        }
-
-        if (
-          st.turkey.x >= 930 &&
-          st.turkey.x <= 1040 &&
-          !st.turkey.grounded &&
-          st.turkey.stamina >= 0.6 &&
-          st.turkey.dashIframes <= 0
-        ) {
-          inp.dashPressed = true;
-        }
-      }
-
       world.stepWorld(dt, inp);
-
-      const thrownKnife = st.layout.knives.find(
-        (k) =>
-          k.kind === 'thrown' &&
-          k.x > st.farmer.x + 135 &&
-          k.x < st.turkey.x + 120 &&
-          k.y < VIEW.groundY - 12,
-      );
-      const hasCloseShave = st.particles.callouts.some(
-        (c) => c.text.startsWith('CLOSE SHAVE!') && c.life >= 0.65,
-      );
-      const hasOnlyCloseShave = st.particles.callouts.length === 1 && hasCloseShave;
-      const decoyInLane = st.layout.decoys.find(
-        (d) => d.x >= oven1.x + oven1.w - 8 && d.x <= 1235 && d.bounces >= 1,
-      );
-
-      if (
-        launched &&
-        st.lives === 3 &&
-        hasOnlyCloseShave &&
-        oven1.state === 'erupting' &&
-        st.turkey.x >= 965 &&
-        st.turkey.x <= 1135 &&
-        st.turkey.y + st.turkey.h < oven1.y - 45 &&
-        st.turkey.dashIframes > 0 &&
-        st.farmer.x > st.cameraX + 45 &&
-        st.farmer.x < st.turkey.x - 190 &&
-        st.farmer.badgeText === '! SPOTTED!' &&
-        thrownKnife &&
-        decoyInLane
-      ) {
-        break;
+      const jedVis = st.farmer.x >= st.cameraX + 60 && st.farmer.x <= st.turkey.x - 140;
+      const hasShave = st.particles.callouts.some((c) => c.text.startsWith('CLOSE SHAVE!') && c.life >= 0.4);
+      const hasProj = st.layout.knives.some((k) => k.active && k.x > st.cameraX + 120 && k.x < st.cameraX + 1140) ||
+        st.layout.nets.some((n) => n.active && n.x > st.cameraX + 120 && n.x < st.cameraX + 1140);
+      if (st.stageIndex === 0 && st.lives === 3 && ov0.state === 'erupting' && st.turkey.x >= 775 && st.turkey.x <= 1040 && st.turkey.y <= 475 && jedVis && st.farmer.badgeText.startsWith('!') && (hasShave || hasProj)) {
+        bestSnap = true;
+        if (hasShave && hasProj) break;
       }
+      if (bestSnap && st.turkey.x > 1035) break;
     }
     world.state.bannerTimer = 0;
     return true;
   }
-
   if (shotName === 'kitchen') {
-    world.startNewRun(MODES.ESCAPE);
+    world.startNewRun(MODES.ESCAPE, 0);
     let steps = 0;
-    while (world.state.stageIndex < 2 && steps < 2800) {
+    while (world.state.stageIndex < 2 && steps < 3200) {
       steps += 1;
       const st = world.state;
       if (st.screen === SCREENS.STAGE_CLEAR) { world.advanceStage(); continue; }
-      if (st.screen === SCREENS.END) { world.startNewRun(MODES.ESCAPE); continue; }
-      world.stepWorld(dt, createSmartAutopilot(st, { useDecoy: false, useStealth: false }));
+      if (st.screen === SCREENS.END) { world.startNewRun(MODES.ESCAPE, 0); continue; }
+      world.stepWorld(dt, autopilot(st));
     }
-
-    for (let i = 0; i < 650; i += 1) {
+    for (let i = 0; i < 1400; i += 1) {
       const st = world.state;
       if (st.screen === SCREENS.END) break;
-      const finalOven = st.layout.ovens[st.layout.ovens.length - 1];
-      const oven3 = st.layout.ovens[2];
-      const inp = createSmartAutopilot(st, { useDecoy: false, useStealth: false });
-
-      if (st.turkey.x >= 2660 && st.turkey.x <= 2920) {
-        const chefOnFloor = st.farmer.x >= oven3.x + oven3.w + 150 && st.farmer.x <= 2580;
-        const hasThrown = st.layout.knives.some((k) => k.kind === 'thrown' && k.x > st.farmer.x + 80);
-        if (!chefOnFloor || !hasThrown || finalOven.state !== 'erupting') {
-          inp.moveX = st.turkey.x > 2765 ? -0.42 : st.turkey.x < 2710 ? 0.35 : 0;
-          inp.jumpPressed = false;
-          inp.jumpHeld = false;
-          inp.dashPressed = false;
-          const nearThrown = st.layout.knives.find(
-            (k) => k.kind === 'thrown' && Math.hypot(k.x - (st.turkey.x + 30), k.y - (st.turkey.y + 34)) < 115,
-          );
-          if (nearThrown && st.turkey.stamina >= 0.6) {
-            inp.moveX = 1;
-            inp.dashPressed = true;
-          }
-        } else {
-          inp.moveX = 1;
+      const finalOv = st.layout.ovens[st.layout.ovens.length - 1];
+      const inp = autopilot(st);
+      if (st.turkey.x >= 2850 && st.turkey.x <= 3390) {
+        const chefReady = st.farmer.x >= 2660 && (st.farmer.state === 'chase' || st.farmer.state === 'throw');
+        if (st.turkey.y > 325 && st.turkey.x < 3145) {
+          inp.moveX = st.turkey.x < 3045 ? 0.85 : st.turkey.x > 3100 ? -0.6 : 0.2;
           if (st.turkey.grounded) inp.jumpPressed = true;
-          inp.jumpHeld = true;
-          if (st.turkey.stamina >= 0.6 && st.turkey.dashIframes <= 0) inp.dashPressed = true;
+          inp.jumpHeld = true; inp.dashPressed = false;
+        } else if (!chefReady || finalOv.state !== 'erupting') {
+          inp.moveX = st.turkey.x < 3175 ? 0.35 : 0;
+          inp.jumpHeld = true; inp.dashPressed = false;
+        } else {
+          inp.moveX = 1; inp.jumpHeld = true;
+          if (st.turkey.x >= 3245 && st.turkey.stamina >= 0.56 && st.turkey.dashIframes <= 0) inp.dashPressed = true;
         }
       }
       world.stepWorld(dt, inp);
-
-      const chefClear = st.farmer.x >= oven3.x + oven3.w + 150 && st.farmer.x + st.farmer.w <= finalOven.x - 160;
-      const thrownKnife = st.layout.knives.find(
-        (k) => k.kind === 'thrown' && k.x > st.farmer.x + 150 && k.x < st.cameraX + 1060 && k.y < VIEW.groundY - 25,
-      );
-      const sweeperNearChef = st.layout.knives.some(
-        (k) => k.kind === 'sweeper' && Math.abs(k.x - (st.farmer.x + st.farmer.w * 0.5)) < 150,
-      );
-      const hasCloseShave = st.particles.callouts.some(
-        (c) => c.text.startsWith('CLOSE SHAVE!') && c.life >= 0.72,
-      );
-      const hasOuch = st.particles.callouts.some((c) => c.text.startsWith('OUCH!'));
-
-      if (
-        !hasOuch &&
-        hasCloseShave &&
-        (st.turkey.hitInvuln <= 0 || Math.floor(st.elapsed * 20) % 2 === 1) &&
-        chefClear &&
-        !sweeperNearChef &&
-        finalOven.state === 'erupting' &&
-        thrownKnife &&
-        st.turkey.x >= 2740 &&
-        st.turkey.x <= 2985 &&
-        st.farmer.x > st.cameraX + 120 &&
-        st.farmer.x < st.turkey.x - 185
-      ) {
+      const visibleTurkey = st.turkey.hitInvuln <= 0 || Math.floor(st.elapsed * 20) % 2 === 1;
+      const noOuch = !st.particles.callouts.some((c) => c.text.startsWith('OUCH!'));
+      const exitVis = st.layout.exit.x + st.layout.exit.w <= st.cameraX + VIEW.width + 20;
+      const chefHot = (st.farmer.state === 'chase' || st.farmer.state === 'throw') && st.farmer.x >= st.cameraX + 95 && st.farmer.x <= st.turkey.x - 140;
+      const hasKnife = st.layout.knives.some((k) => k.active && k.x > st.cameraX + 160 && k.x < st.cameraX + 1160);
+      if (visibleTurkey && noOuch && exitVis && chefHot && finalOv.state === 'erupting' && hasKnife && st.turkey.facing === 1 && st.turkey.x >= 3155 && st.turkey.x <= 3385 && st.turkey.y >= 210 && st.turkey.y <= 335) {
         break;
       }
     }
     world.state.bannerTimer = 0;
     return true;
   }
-
   if (shotName === 'end') {
-    world.startNewRun(MODES.ESCAPE);
-    let steps = 0;
-    let stealthFrames = 0;
-    while (world.state.screen !== SCREENS.END && steps < 5200) {
+    world.startNewRun(MODES.ESCAPE, 0);
+    let steps = 0, stealthFrames = 0;
+    while (world.state.screen !== SCREENS.END && steps < 6400) {
       steps += 1;
       const st = world.state;
       if (st.screen === SCREENS.STAGE_CLEAR) { world.advanceStage(); continue; }
-      const useStealth = st.stageIndex === 0 && stealthFrames < 72;
-      const inp = createSmartAutopilot(st, { useDecoy: true, useStealth });
+      const inp = autopilot(st, { useDecoy: true, useStealth: st.stageIndex === 0 && stealthFrames < 65 });
       if (st.turkey.hidden) stealthFrames += 1;
       world.stepWorld(dt, inp);
-      if (st.screen === SCREENS.END && st.outcome !== 'escaped') {
-        world.startNewRun(MODES.ESCAPE);
-        stealthFrames = 0;
-      }
+      if (st.screen === SCREENS.END && st.outcome !== 'escaped') { world.startNewRun(MODES.ESCAPE, 0); stealthFrames = 0; }
     }
-    for (let i = 0; i < 16; i += 1) world.stepWorld(dt, IDLE_INPUT);
+    for (let i = 0; i < 16; i += 1) world.stepWorld(dt, IDLE);
     return true;
   }
-
   return false;
 }

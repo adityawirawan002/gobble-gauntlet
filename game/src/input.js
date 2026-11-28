@@ -1,162 +1,53 @@
-// Unified keyboard and mouse input controller with edge-triggered actions and virtual canvas coordinates.
+// Unified keyboard & mouse input controller with edge-triggered actions and virtual 1280x800 coords.
 
 import { VIEW } from './constants.js';
 
-export function createInputController(canvas, callbacks = {}) {
+export function createInputController(canvas, cb = {}) {
   const held = new Set();
-  let jumpPressed = false;
-  let dashPressed = false;
-  let hidePressed = false;
-  let decoyPressed = false;
-  let mouseJumpHeld = false;
-  let pointerX = VIEW.width * 0.5;
-  let pointerY = VIEW.height * 0.5;
-  let pointerInside = false;
-
-  function toCanvasCoords(event) {
-    const rect = canvas.getBoundingClientRect();
-    if (!rect.width || !rect.height) return { x: pointerX, y: pointerY };
-    return {
-      x: ((event.clientX - rect.left) / rect.width) * VIEW.width,
-      y: ((event.clientY - rect.top) / rect.height) * VIEW.height,
-    };
-  }
-
-  function onKeyDown(event) {
-    const code = event.code;
-    if (
-      code === 'Space' || code === 'ArrowUp' || code === 'ArrowDown' ||
-      code === 'ArrowLeft' || code === 'ArrowRight'
-    ) {
-      event.preventDefault();
-    }
-    if (event.repeat) return;
-
-    if (code === 'KeyM') {
-      callbacks.onMute?.();
-      return;
-    }
-    if (code === 'KeyP' || code === 'Escape') {
-      callbacks.onPause?.();
-      return;
-    }
-    if (code === 'KeyR') {
-      callbacks.onRestart?.();
-      return;
-    }
-    if (code === 'Enter') {
-      callbacks.onConfirm?.();
-    }
-
-    held.add(code);
-    if (code === 'Space' || code === 'KeyW' || code === 'ArrowUp') {
-      jumpPressed = true;
-      callbacks.onConfirm?.();
-    }
-    if (code === 'ShiftLeft' || code === 'ShiftRight' || code === 'KeyK') {
-      dashPressed = true;
-    }
-    if (code === 'KeyE' || code === 'KeyS' || code === 'ArrowDown') {
-      hidePressed = true;
-    }
-    if (code === 'KeyQ' || code === 'KeyF') {
-      decoyPressed = true;
-    }
-  }
-
-  function onKeyUp(event) {
-    held.delete(event.code);
-  }
-
-  function onPointerMove(event) {
-    const pt = toCanvasCoords(event);
-    pointerX = pt.x;
-    pointerY = pt.y;
-    pointerInside = true;
-    callbacks.onHover?.(pt.x, pt.y);
-  }
-
-  function onPointerDown(event) {
-    canvas.focus?.();
-    const pt = toCanvasCoords(event);
-    pointerX = pt.x;
-    pointerY = pt.y;
-    pointerInside = true;
-    callbacks.onUserGesture?.();
-
-    if (event.button === 2) {
-      dashPressed = true;
-      return;
-    }
-    if (event.button === 0) {
-      const consumedByUi = callbacks.onClick?.(pt.x, pt.y);
-      if (!consumedByUi) {
-        jumpPressed = true;
-        mouseJumpHeld = true;
-      }
-    }
-  }
-
-  function onPointerUp(event) {
-    if (event.button === 0) mouseJumpHeld = false;
-  }
-
-  function onContextMenu(event) {
-    event.preventDefault();
-  }
-
-  function onBlur() {
-    held.clear();
-    mouseJumpHeld = false;
-  }
-
-  window.addEventListener('keydown', onKeyDown, { passive: false });
-  window.addEventListener('keyup', onKeyUp);
-  window.addEventListener('blur', onBlur);
-  canvas.addEventListener('pointermove', onPointerMove);
-  canvas.addEventListener('pointerdown', onPointerDown);
-  window.addEventListener('pointerup', onPointerUp);
-  canvas.addEventListener('contextmenu', onContextMenu);
-
-  function sampleFrameInput() {
-    const left = held.has('KeyA') || held.has('ArrowLeft');
-    const right = held.has('KeyD') || held.has('ArrowRight');
-    const jumpHeld = held.has('Space') || held.has('KeyW') || held.has('ArrowUp') || mouseJumpHeld;
-    const hideHeld = held.has('KeyE') || held.has('KeyS') || held.has('ArrowDown');
-
-    const frame = {
-      moveX: (right ? 1 : 0) - (left ? 1 : 0),
-      jumpPressed,
-      jumpHeld,
-      dashPressed,
-      hidePressed,
-      hideHeld,
-      decoyPressed,
-      pointerX,
-      pointerY,
-      pointerInside,
-    };
-
-    jumpPressed = false;
-    dashPressed = false;
-    hidePressed = false;
-    decoyPressed = false;
-    return frame;
-  }
-
-  function clearEdges() {
-    jumpPressed = false;
-    dashPressed = false;
-    hidePressed = false;
-    decoyPressed = false;
-    mouseJumpHeld = false;
-  }
-
+  let jumpPressed = false, dashPressed = false, hidePressed = false, decoyPressed = false, mouseJump = false;
+  let px = VIEW.width * 0.5, py = VIEW.height * 0.5, inside = false;
+  const prevent = new Set(['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
+  const toCanvas = (e) => {
+    const r = canvas.getBoundingClientRect();
+    return r.width && r.height ? { x: ((e.clientX - r.left) / r.width) * VIEW.width, y: ((e.clientY - r.top) / r.height) * VIEW.height } : { x: px, y: py };
+  };
+  window.addEventListener('keydown', (e) => {
+    const c = e.code;
+    if (prevent.has(c)) e.preventDefault();
+    if (e.repeat) return;
+    if (c === 'KeyM') { cb.onMute?.(); return; }
+    if (c === 'KeyP' || c === 'Escape') { cb.onPause?.(); return; }
+    if (c === 'KeyR') { cb.onRestart?.(); return; }
+    if (c === 'Digit1' || c === 'Digit2' || c === 'Digit3') { cb.onSelectStage?.(Number(c[5]) - 1); return; }
+    if (c === 'Enter') cb.onConfirm?.();
+    held.add(c);
+    if (c === 'Space' || c === 'KeyW' || c === 'ArrowUp') { jumpPressed = true; cb.onConfirm?.(); }
+    if (c === 'ShiftLeft' || c === 'ShiftRight' || c === 'KeyK') dashPressed = true;
+    if (c === 'KeyE' || c === 'KeyS' || c === 'ArrowDown') hidePressed = true;
+    if (c === 'KeyQ' || c === 'KeyF') decoyPressed = true;
+  }, { passive: false });
+  window.addEventListener('keyup', (e) => held.delete(e.code));
+  window.addEventListener('blur', () => { held.clear(); mouseJump = false; });
+  canvas.addEventListener('pointermove', (e) => { ({ x: px, y: py } = toCanvas(e)); inside = true; cb.onHover?.(px, py); });
+  canvas.addEventListener('pointerdown', (e) => {
+    canvas.focus?.(); ({ x: px, y: py } = toCanvas(e)); inside = true; cb.onUserGesture?.();
+    if (e.button === 2) { dashPressed = true; return; }
+    if (e.button === 0 && !cb.onClick?.(px, py)) { jumpPressed = true; mouseJump = true; }
+  });
+  window.addEventListener('pointerup', (e) => { if (e.button === 0) mouseJump = false; });
+  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
   return {
-    sampleFrameInput,
-    clearEdges,
-    getPointer() {
-      return { x: pointerX, y: pointerY, inside: pointerInside };
+    sampleFrameInput() {
+      const f = {
+        moveX: ((held.has('KeyD') || held.has('ArrowRight')) ? 1 : 0) - ((held.has('KeyA') || held.has('ArrowLeft')) ? 1 : 0),
+        jumpPressed, jumpHeld: held.has('Space') || held.has('KeyW') || held.has('ArrowUp') || mouseJump,
+        dashPressed, hidePressed, hideHeld: held.has('KeyE') || held.has('KeyS') || held.has('ArrowDown'),
+        decoyPressed, pointerX: px, pointerY: py, pointerInside: inside,
+      };
+      jumpPressed = dashPressed = hidePressed = decoyPressed = false;
+      return f;
     },
+    clearEdges() { jumpPressed = dashPressed = hidePressed = decoyPressed = mouseJump = false; },
+    getPointer() { return { x: px, y: py, inside }; },
   };
 }

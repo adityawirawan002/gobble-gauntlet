@@ -1,243 +1,135 @@
-// Entry point for Gobble Gauntlet: DPR canvas setup, fixed-step game loop, UI click routing, and audio wiring.
+// Entry point for Gobble Gauntlet v3: DPR canvas setup, fixed-step loop, UI clicks, audio & QA hook.
 
-import { HarvestAudioSynth } from './audio-synth.js';
+import { HarvestAudioSynth } from './audio.js';
 import { EVENTS, MODES, pointInRect, SCREENS, UI_RECTS, VIEW } from './constants.js';
+import { createEscapeWorld } from './engine.js';
+import { renderGameFrame } from './hud.js';
 import { createInputController } from './input.js';
-import { renderGameFrame } from './renderer.js';
 import { applyDeterministicShot } from './shots.js';
-import { createEscapeWorld } from './world.js';
 
 export function bootstrapGobbleGauntlet() {
   const canvas = document.getElementById('gobble-canvas');
   const statusEl = document.getElementById('hud-sr');
-  if (!canvas) return null;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return null;
-
+  const ctx = canvas?.getContext('2d');
+  if (!canvas || !ctx) return null;
   const params = new URLSearchParams(window.location.search);
-  const seedParam = Number(params.get('seed'));
-  const seed = Number.isFinite(seedParam) && seedParam > 0 ? Math.floor(seedParam) : 1;
+  const seed = Math.max(1, Math.floor(Number(params.get('seed')) || 1));
   const shotParam = params.get('shot');
-
   const world = createEscapeWorld(seed);
   const audio = new HarvestAudioSynth();
-  let accumulator = 0;
-  let lastTimestamp = 0;
-  let frozenShot = false;
-
-  function syncCanvasResolution() {
+  let accum = 0, lastTs = 0, frozenShot = false;
+  const announce = (text) => { if (statusEl) statusEl.textContent = text; };
+  function syncCanvas() {
     const dpr = Math.min(2, window.devicePixelRatio || 1);
-    const targetW = Math.round(VIEW.width * dpr);
-    const targetH = Math.round(VIEW.height * dpr);
-    if (canvas.width !== targetW || canvas.height !== targetH) {
-      canvas.width = targetW;
-      canvas.height = targetH;
-    }
+    const w = Math.round(VIEW.width * dpr), h = Math.round(VIEW.height * dpr);
+    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
-
-  function announce(text) {
-    if (statusEl) statusEl.textContent = text;
-  }
-
-  function dispatchAudioEvents(events) {
-    if (!events) return;
-    if (events & EVENTS.JUMP) audio.playJump();
-    if (events & EVENTS.FLUTTER) audio.playFlutter();
-    if (events & EVENTS.DASH) audio.playDash();
-    if (events & EVENTS.HIDE) audio.playHideRustle();
-    if (events & EVENTS.DECOY) audio.playDecoyBounce();
-    if (events & EVENTS.CORN) audio.playCornChime(world.state.combo);
-    if (events & EVENTS.BERRY) audio.playBerryHeal();
-    if (events & EVENTS.CLOSE_SHAVE) audio.playCloseShave();
-    if (events & EVENTS.SPOTTED) audio.playAlertSting();
-    if (events & EVENTS.KNIFE_THROW) audio.playKnifeWhoosh();
-    if (events & EVENTS.OVEN_BURST) audio.playOvenRoar();
-    if (events & EVENTS.BOUNCE) audio.playBouncePad();
-    if (events & EVENTS.HIT) audio.playHitThud();
-    if (events & EVENTS.STAGE_CLEAR) {
-      audio.playStageClear();
-      announce(`Stage ${world.state.stage.id} cleared! Score ${world.state.score}.`);
-    }
-    if (events & EVENTS.VICTORY) {
-      audio.playVictoryFanfare();
-      announce(`Escaped the table! Final score ${world.state.score}, Rank ${world.state.rank}.`);
-    }
-    if (events & EVENTS.CAUGHT) {
-      audio.playCaughtJingle();
-      announce(`Almost dinner! Caught in ${world.state.stage.title}. Score ${world.state.score}.`);
-    }
-  }
-
-  function startRunFromUi() {
-    frozenShot = false;
-    audio.unlock();
-    world.startNewRun(world.state.mode);
+  const audioMap = [
+    [EVENTS.JUMP, () => audio.playJump()], [EVENTS.FLUTTER, () => audio.playFlutter()],
+    [EVENTS.UPDRAFT, () => audio.playUpdraft()], [EVENTS.DASH, () => audio.playDash()],
+    [EVENTS.HIDE, () => audio.playHideRustle()], [EVENTS.DECOY, () => audio.playDecoyBounce()],
+    [EVENTS.CORN, () => audio.playCornChime(world.state.combo)], [EVENTS.BERRY, () => audio.playBerryHeal()],
+    [EVENTS.CLOSE_SHAVE, () => audio.playCloseShave()], [EVENTS.SPOTTED, () => audio.playAlertSting()],
+    [EVENTS.KNIFE_THROW, () => audio.playKnifeWhoosh()], [EVENTS.NET_THROW, () => audio.playNetWhoosh()],
+    [EVENTS.DOG_BARK, () => audio.playDogBark()], [EVENTS.OVEN_BURST, () => audio.playOvenRoar()],
+    [EVENTS.BOUNCE, () => audio.playBouncePad()], [EVENTS.HIT, () => audio.playHitThud()],
+    [EVENTS.STAGE_CLEAR, () => { audio.playStageClear(); announce(`Stage ${world.state.stage.id} cleared!`); }],
+    [EVENTS.VICTORY, () => { audio.playVictoryFanfare(); announce(`Escaped! Score ${world.state.score}, Rank ${world.state.rank}.`); }],
+    [EVENTS.CAUGHT, () => { audio.playCaughtJingle(); announce(`Caught in ${world.state.stage.title}.`); }],
+  ];
+  function startRun(stageIdx = world.state.selectedStartStage) {
+    frozenShot = false; audio.unlock();
+    world.startNewRun(world.state.mode, stageIdx);
     audio.playGobble(1.1);
     announce(`Run started in ${world.state.stage.title}.`);
   }
-
-  function detectHoverTarget(px, py) {
-    const scr = world.state.screen;
-    if (scr === SCREENS.TITLE) {
-      if (pointInRect(px, py, UI_RECTS.titlePlayBtn)) return 'titlePlayBtn';
-      if (pointInRect(px, py, UI_RECTS.titleModeBtn)) return 'titleModeBtn';
-    } else if (scr === SCREENS.PLAY) {
-      if (pointInRect(px, py, UI_RECTS.hudPauseBtn)) return 'hudPauseBtn';
-      if (pointInRect(px, py, UI_RECTS.hudMuteBtn)) return 'hudMuteBtn';
-    } else if (scr === SCREENS.PAUSE) {
-      if (pointInRect(px, py, UI_RECTS.pauseResumeBtn)) return 'pauseResumeBtn';
-      if (pointInRect(px, py, UI_RECTS.pauseRestartBtn)) return 'pauseRestartBtn';
-      if (pointInRect(px, py, UI_RECTS.pauseTitleBtn)) return 'pauseTitleBtn';
-    } else if (scr === SCREENS.END) {
-      if (pointInRect(px, py, UI_RECTS.endPlayAgainBtn)) return 'endPlayAgainBtn';
-      if (pointInRect(px, py, UI_RECTS.endTitleBtn)) return 'endTitleBtn';
+  const screenButtons = {
+    [SCREENS.TITLE]: ['titleStage1Btn', 'titleStage2Btn', 'titleStage3Btn', 'titlePlayBtn', 'titleModeBtn'],
+    [SCREENS.PLAY]: ['hudPauseBtn', 'hudMuteBtn'],
+    [SCREENS.PAUSE]: ['pauseResumeBtn', 'pauseRestartBtn', 'pauseTitleBtn'],
+    [SCREENS.END]: ['endPlayAgainBtn', 'endTitleBtn'],
+  };
+  function detectHover(px, py) {
+    for (const id of (screenButtons[world.state.screen] || [])) {
+      if (pointInRect(px, py, UI_RECTS[id])) return id;
     }
     return null;
   }
-
-  exportHoverCursor();
-  function exportHoverCursor() {
-    canvas.style.cursor = world.state.hoverTarget ? 'pointer' : 'default';
-  }
-
-  function handleUiClick(px, py) {
-    const target = detectHoverTarget(px, py);
-    world.state.hoverTarget = target;
-    exportHoverCursor();
-    if (!target) return false;
-
+  const updateCursor = () => { canvas.style.cursor = world.state.hoverTarget ? 'pointer' : 'default'; };
+  function handleClick(px, py) {
+    const id = detectHover(px, py);
+    world.state.hoverTarget = id; updateCursor();
+    if (!id) return false;
     audio.unlock();
-    if (target === 'titlePlayBtn') {
-      startRunFromUi();
-      return true;
+    if (id.startsWith('titleStage')) {
+      const idx = Number(id[10]) - 1;
+      world.state.selectedStartStage = idx; audio.playCornChime(idx + 1); return true;
     }
-    if (target === 'titleModeBtn') {
+    if (id === 'titlePlayBtn') { startRun(); return true; }
+    if (id === 'titleModeBtn') {
       world.state.mode = world.state.mode === MODES.ESCAPE ? MODES.ENDLESS : MODES.ESCAPE;
-      audio.playCornChime(2);
-      return true;
+      audio.playCornChime(2); return true;
     }
-    if (target === 'hudPauseBtn') {
-      world.state.screen = SCREENS.PAUSE;
-      announce('Game paused.');
-      return true;
-    }
-    if (target === 'hudMuteBtn') {
-      world.state.muted = audio.toggleMute();
-      return true;
-    }
-    if (target === 'pauseResumeBtn') {
-      world.state.screen = SCREENS.PLAY;
-      announce('Resumed.');
-      return true;
-    }
-    if (target === 'pauseRestartBtn') {
-      startRunFromUi();
-      return true;
-    }
-    if (target === 'pauseTitleBtn') {
-      world.resetToTitle();
-      announce('Returned to title.');
-      return true;
-    }
-    if (target === 'endPlayAgainBtn') {
-      startRunFromUi();
-      return true;
-    }
-    if (target === 'endTitleBtn') {
-      world.resetToTitle();
-      announce('Returned to title.');
-      return true;
-    }
+    if (id === 'hudPauseBtn') { world.state.screen = SCREENS.PAUSE; return true; }
+    if (id === 'hudMuteBtn') { world.state.muted = audio.toggleMute(); return true; }
+    if (id === 'pauseResumeBtn') { world.state.screen = SCREENS.PLAY; return true; }
+    if (id === 'pauseRestartBtn') { startRun(); return true; }
+    if (id === 'pauseTitleBtn' || id === 'endTitleBtn') { world.resetToTitle(); return true; }
+    if (id === 'endPlayAgainBtn') { startRun(0); return true; }
     return false;
   }
-
   const input = createInputController(canvas, {
-    onUserGesture() {
+    onUserGesture: () => audio.unlock(),
+    onHover: (px, py) => { world.state.hoverTarget = detectHover(px, py); updateCursor(); },
+    onClick: (px, py) => (world.state.screen === SCREENS.STAGE_CLEAR ? (world.advanceStage(), true) : handleClick(px, py)),
+    onSelectStage: (idx) => {
+      if (world.state.screen === SCREENS.TITLE) { audio.unlock(); world.state.selectedStartStage = idx; audio.playCornChime(idx + 1); }
+    },
+    onConfirm: () => {
       audio.unlock();
+      if (world.state.screen === SCREENS.TITLE) startRun();
+      else if (world.state.screen === SCREENS.END) startRun(0);
+      else if (world.state.screen === SCREENS.STAGE_CLEAR) world.advanceStage();
     },
-    onHover(px, py) {
-      world.state.hoverTarget = detectHoverTarget(px, py);
-      exportHoverCursor();
+    onPause: () => {
+      if (world.state.screen === SCREENS.PLAY) world.state.screen = SCREENS.PAUSE;
+      else if (world.state.screen === SCREENS.PAUSE) world.state.screen = SCREENS.PLAY;
     },
-    onClick(px, py) {
-      if (world.state.screen === SCREENS.STAGE_CLEAR) {
-        world.advanceStage();
-        return true;
-      }
-      return handleUiClick(px, py);
-    },
-    onConfirm() {
-      audio.unlock();
-      if (world.state.screen === SCREENS.TITLE || world.state.screen === SCREENS.END) {
-        startRunFromUi();
-      } else if (world.state.screen === SCREENS.STAGE_CLEAR) {
-        world.advanceStage();
-      }
-    },
-    onPause() {
-      if (world.state.screen === SCREENS.PLAY) {
-        world.state.screen = SCREENS.PAUSE;
-        announce('Paused.');
-      } else if (world.state.screen === SCREENS.PAUSE) {
-        world.state.screen = SCREENS.PLAY;
-        announce('Resumed.');
-      }
-    },
-    onRestart() {
-      if (world.state.screen !== SCREENS.TITLE) {
-        startRunFromUi();
-      }
-    },
-    onMute() {
-      audio.unlock();
-      world.state.muted = audio.toggleMute();
-    },
+    onRestart: () => { if (world.state.screen !== SCREENS.TITLE) startRun(0); },
+    onMute: () => { audio.unlock(); world.state.muted = audio.toggleMute(); },
   });
-
-  syncCanvasResolution();
-  window.addEventListener('resize', syncCanvasResolution);
-
-  // Deterministic shot mode (?shot=title|farm|kitchen|end&seed=1).
+  syncCanvas();
+  window.addEventListener('resize', syncCanvas);
+  window.__GOBBLE_STATE__ = () => ({
+    screen: world.state.screen, stage: world.state.stage.id, score: world.state.score,
+    lives: world.state.lives, muted: world.state.muted, outcome: world.state.outcome, rank: world.state.rank,
+    turkey: { x: Math.round(world.state.turkey.x), y: Math.round(world.state.turkey.y), tier: world.state.turkey.tier, hidden: world.state.turkey.hidden, dashIframes: Number(world.state.turkey.dashIframes.toFixed(2)) },
+    farmer: { x: Math.round(world.state.farmer.x), state: world.state.farmer.state, badge: world.state.farmer.badgeText },
+    decoys: world.state.layout.decoys.length, stats: { ...world.state.stats },
+  });
   if (shotParam) {
     frozenShot = applyDeterministicShot(world, shotParam.toLowerCase());
     renderGameFrame(ctx, world.state);
-    window.__GOBBLE_READY__ = {
-      shot: shotParam,
-      screen: world.state.screen,
-      stage: world.state.stage.id,
-      score: world.state.score,
-      lives: world.state.lives,
-      outcome: world.state.outcome,
-      rank: world.state.rank,
-      closeShaves: world.state.stats.closeShaves,
-      badges: world.state.earnedBadges.map((b) => b.label),
-    };
+    window.__GOBBLE_READY__ = { shot: shotParam, ...window.__GOBBLE_STATE__(), badges: world.state.earnedBadges.map((b) => b.label) };
   }
-
-  function runGameLoop(timestamp) {
-    if (!lastTimestamp) lastTimestamp = timestamp;
-    const rawDt = Math.min(VIEW.maxFrameDt, Math.max(0, (timestamp - lastTimestamp) / 1000));
-    lastTimestamp = timestamp;
-
+  function loop(ts) {
+    if (!lastTs) lastTs = ts;
+    const rawDt = Math.min(VIEW.maxFrameDt, Math.max(0, (ts - lastTs) / 1000));
+    lastTs = ts;
     if (!frozenShot) {
-      accumulator += rawDt;
-      while (accumulator >= VIEW.fixedDt) {
-        const frameInput = input.sampleFrameInput();
-        const events = world.stepWorld(VIEW.fixedDt, frameInput);
-        dispatchAudioEvents(events);
-        const chased = world.state.farmer.badgeText.startsWith('!');
-        audio.tickMusic(VIEW.fixedDt, world.state.screen === SCREENS.PLAY, world.state.stageIndex, chased);
-        accumulator -= VIEW.fixedDt;
+      accum += rawDt;
+      while (accum >= VIEW.fixedDt) {
+        const ev = world.stepWorld(VIEW.fixedDt, input.sampleFrameInput());
+        if (ev) for (const [bit, fn] of audioMap) if (ev & bit) fn();
+        audio.tickMusic(VIEW.fixedDt, world.state.screen === SCREENS.PLAY, world.state.stageIndex, world.state.farmer.badgeText.startsWith('!'));
+        accum -= VIEW.fixedDt;
       }
       renderGameFrame(ctx, world.state);
     }
-
-    window.requestAnimationFrame(runGameLoop);
+    window.requestAnimationFrame(loop);
   }
-
-  window.requestAnimationFrame(runGameLoop);
+  window.requestAnimationFrame(loop);
   return { world, audio, input };
 }
-
 bootstrapGobbleGauntlet();

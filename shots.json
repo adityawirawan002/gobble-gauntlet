@@ -1,6 +1,6 @@
 [
-  { "name": "1-title.jpg", "query": "?shot=title&seed=1" },
-  { "name": "2-farmyard-chase.jpg", "query": "?shot=farm&seed=1" },
-  { "name": "3-kitchen-gauntlet.jpg", "query": "?shot=kitchen&seed=1" },
-  { "name": "4-end-screen.jpg", "query": "?shot=end&seed=1" }
+  { "name": "1-title.jpg", "query": "?shot=title&seed=1", "width": 1280, "height": 800 },
+  { "name": "2-farmyard-chase.jpg", "query": "?shot=farm&seed=1", "width": 1280, "height": 800 },
+  { "name": "3-kitchen-gauntlet.jpg", "query": "?shot=kitchen&seed=1", "width": 1280, "height": 800 },
+  { "name": "4-end-screen.jpg", "query": "?shot=end&seed=1", "width": 1280, "height": 800 }
 ]

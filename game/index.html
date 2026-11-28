@@ -6,18 +6,13 @@
   <title>Gobble Gauntlet — Turkey Escape</title>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='36' r='20' fill='%238C451C' stroke='%2326140D' stroke-width='4'/%3E%3Ccircle cx='44' cy='22' r='10' fill='%236B3014' stroke='%2326140D' stroke-width='4'/%3E%3Cpolygon points='52,20 62,24 52,28' fill='%23F4B43A' stroke='%2326140D' stroke-width='3'/%3E%3Cpath d='M48,27 C52,33 46,38 44,31 Z' fill='%23D62828'/%3E%3Ccircle cx='46' cy='19' r='3' fill='%23FFF'/%3E%3Ccircle cx='47' cy='19' r='1.5' fill='%231A0F0A'/%3E%3C/svg%3E" />
   <style>
-    :root {
-      color-scheme: dark;
-      --bg-espresso: #1A0E09;
-      --frame-gold: #D98B2B;
-    }
     * { box-sizing: border-box; }
     html, body {
       margin: 0;
       width: 100%;
       height: 100%;
       overflow: hidden;
-      background: radial-gradient(circle at 50% 35%, #3B1E10 0%, var(--bg-espresso) 82%);
+      background: radial-gradient(circle at 50% 34%, #3B1E10 0%, #160B06 84%);
       display: grid;
       place-items: center;
       font-family: "Trebuchet MS", "Segoe UI", system-ui, sans-serif;
@@ -26,14 +21,14 @@
     }
     #game-shell {
       position: relative;
-      width: min(100vw, calc(100vh * 16 / 9));
-      height: min(100vh, calc(100vw * 9 / 16));
+      width: min(100vw, calc(100vh * 16 / 10));
+      height: min(100vh, calc(100vw * 10 / 16));
       display: grid;
       place-items: center;
-      box-shadow: 0 24px 72px rgba(0, 0, 0, 0.72), 0 0 0 2px rgba(217, 139, 43, 0.35);
+      box-shadow: 0 24px 72px rgba(0, 0, 0, 0.78), 0 0 0 2px rgba(224, 155, 56, 0.38);
       border-radius: 6px;
       overflow: hidden;
-      background: #24130B;
+      background: #1F1009;
     }
     #gobble-canvas {
       display: block;
@@ -54,7 +49,7 @@
 </head>
 <body>
   <main id="game-shell">
-    <canvas id="gobble-canvas" width="1280" height="720" tabindex="0" aria-label="Gobble Gauntlet turkey escape game"></canvas>
+    <canvas id="gobble-canvas" width="1280" height="800" tabindex="0" aria-label="Gobble Gauntlet turkey escape game"></canvas>
     <div id="hud-sr" role="status" aria-live="polite">Gobble Gauntlet ready. Press Space or click Play Escape.</div>
   </main>
   <script type="module" src="./src/main.js"></script>
